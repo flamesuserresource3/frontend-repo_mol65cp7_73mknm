@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { PlusCircle, Users, Share2, Copy, Video, VideoOff, Monitor } from 'lucide-react';
+import { PlusCircle, Users, Share2, Copy, Video, VideoOff, Monitor, PlayCircle, StopCircle } from 'lucide-react';
 
 const randomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 
@@ -11,24 +11,29 @@ const CreateRoom = ({ onRoomCreated }) => {
   const [roomCode, setRoomCode] = useState('');
   const [copied, setCopied] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
+  const [screenOn, setScreenOn] = useState(false);
   const videoRef = useRef(null);
+  const screenVideoRef = useRef(null);
   const streamRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const canvasRef = useRef(null);
+  const frameTimerRef = useRef(null);
 
   const channel = useMemo(() => (roomCode ? new BroadcastChannel(`room-${roomCode}`) : null), [roomCode]);
 
   useEffect(() => {
     return () => {
       if (channel) channel.close();
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-      }
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if (screenStreamRef.current) screenStreamRef.current.getTracks().forEach(t => t.stop());
+      if (frameTimerRef.current) clearInterval(frameTimerRef.current);
     };
   }, [channel]);
 
   useEffect(() => {
     if (!channel) return;
-    channel.postMessage({ type: 'state', payload: { name, capacity, message, cameraOn } });
-  }, [name, capacity, message, cameraOn, channel]);
+    channel.postMessage({ type: 'state', payload: { name, capacity, message, cameraOn, screenOn } });
+  }, [name, capacity, message, cameraOn, screenOn, channel]);
 
   const handleCreate = (e) => {
     e.preventDefault();
@@ -68,6 +73,50 @@ const CreateRoom = ({ onRoomCreated }) => {
       console.error(err);
       setCameraOn(false);
     }
+  };
+
+  const startScreenShare = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      screenStreamRef.current = stream;
+      if (screenVideoRef.current) screenVideoRef.current.srcObject = stream;
+      setScreenOn(true);
+
+      // When screen share ends from browser UI
+      const [track] = stream.getVideoTracks();
+      track.onended = () => stopScreenShare();
+
+      // Begin lightweight frame broadcast (demo only)
+      if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
+      const video = screenVideoRef.current;
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      frameTimerRef.current = setInterval(() => {
+        if (!video || !video.videoWidth) return;
+        const targetW = 640;
+        const scale = targetW / video.videoWidth;
+        canvas.width = targetW;
+        canvas.height = Math.floor(video.videoHeight * scale);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const img = canvas.toDataURL('image/jpeg', 0.5);
+        channel?.postMessage({ type: 'screen_frame', payload: { img, ts: Date.now() } });
+      }, 500);
+    } catch (e) {
+      console.error(e);
+      setScreenOn(false);
+    }
+  };
+
+  const stopScreenShare = () => {
+    if (frameTimerRef.current) clearInterval(frameTimerRef.current);
+    frameTimerRef.current = null;
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(t => t.stop());
+      screenStreamRef.current = null;
+    }
+    if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+    setScreenOn(false);
+    channel?.postMessage({ type: 'screen_end' });
   };
 
   return (
@@ -132,7 +181,7 @@ const CreateRoom = ({ onRoomCreated }) => {
               </div>
               <span className="text-xs text-slate-500">{created ? 'Live' : 'Idle'}</span>
             </div>
-            <div className="rounded-lg h-28 flex items-center justify-center bg-gradient-to-br from-pink-100 via-violet-100 to-blue-100 text-slate-700 text-sm">
+            <div className="rounded-lg h-28 flex items-center justify-center bg-gradient-to-br from-pink-100 via-violet-100 to-blue-100 text-slate-700 text-sm text-center px-3">
               {message || 'Your message will appear here'}
             </div>
           </div>
@@ -160,6 +209,32 @@ const CreateRoom = ({ onRoomCreated }) => {
             </div>
           </div>
 
+          <div className="rounded-xl p-3 bg-white/70 border border-white">
+            <div className="flex items-center justify-between mb-2">
+              <div className="inline-flex items-center gap-2 text-slate-700">
+                <Monitor className="h-4 w-4" />
+                Share Screen
+              </div>
+              {screenOn ? (
+                <button type="button" onClick={stopScreenShare} className="inline-flex items-center gap-1 text-sm px-3 py-1 rounded-md border bg-rose-50 border-rose-200 text-rose-600">
+                  <StopCircle className="h-4 w-4" /> Stop
+                </button>
+              ) : (
+                <button type="button" onClick={startScreenShare} className="inline-flex items-center gap-1 text-sm px-3 py-1 rounded-md border bg-emerald-50 border-emerald-200 text-emerald-600">
+                  <PlayCircle className="h-4 w-4" /> Start
+                </button>
+              )}
+            </div>
+            <div className="rounded-lg overflow-hidden bg-slate-100 h-36 flex items-center justify-center">
+              {screenOn ? (
+                <video ref={screenVideoRef} autoPlay playsInline muted className="h-36 w-full object-cover" />
+              ) : (
+                <div className="text-slate-500 text-sm">Not sharing screen</div>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2">Demo streams lightweight previews to viewers using your browser. For full-quality, we can upgrade to WebRTC signaling.</p>
+          </div>
+
           {created && (
             <div className="rounded-xl p-3 bg-white/70 border border-white">
               <div className="flex items-center gap-2 text-slate-700 mb-2">
@@ -177,7 +252,7 @@ const CreateRoom = ({ onRoomCreated }) => {
                   {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <p className="text-xs text-slate-500 mt-2">Anyone with the link can open a viewer page and watch your display message. Camera state is indicated to viewers.</p>
+              <p className="text-xs text-slate-500 mt-2">Anyone with the link can open a viewer page and watch your display message and screen preview.</p>
             </div>
           )}
         </div>
